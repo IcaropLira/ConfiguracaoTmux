@@ -25,6 +25,7 @@ Ctrl+A
 | Atalho | Ação |
 |---|---|
 | `Ctrl+A \|` | dividir verticalmente |
+| `Ctrl+A \=` | dividir verticalmente |
 | `Ctrl+A -` | dividir horizontalmente |
 | `Ctrl+A h/j/k/l` | navegar |
 | `Alt + setas` | navegar sem prefixo |
@@ -86,10 +87,3 @@ O painel ativo fica destacado e cada painel mostra seu número, título e diret�
 - Adequado para computadores de laboratório.
 - Configuração concentrada em um único `~/.tmux.conf`.
 - Backup automático durante instalação.
-# ConfiguracaoTmux
-# ConfiguracaoTmux
-# ConfiguracaoTmux
-# ConfiguracaoTmux
-# ConfiguracaoTmux
-# ConfiguracaoTmux
-# ConfiguracaoTmux
