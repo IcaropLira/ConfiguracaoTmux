@@ -89,3 +89,4 @@ O painel ativo fica destacado e cada painel mostra seu número, título e diret�
 # ConfiguracaoTmux
 # ConfiguracaoTmux
 # ConfiguracaoTmux
+# ConfiguracaoTmux
