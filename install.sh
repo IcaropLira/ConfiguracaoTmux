@@ -1,39 +1,193 @@
 #!/usr/bin/env bash
-set -e
+#
+#  install.sh — instala o tmux (se precisar) e a configuração Ícaro Lira.
+#  Funciona COM ou SEM acesso a sudo: sem root, baixa um build estático
+#  oficial (tmux/tmux-builds) pra ~/.local/bin, sem tocar em nada fora
+#  da sua pasta pessoal.
+#
+#  Uso: ./install.sh [--user] [--system]
+#
+#  Se a variável de ambiente ICARO_MODE já vier definida como "user" ou
+#  "system" (é o que o instalador combinado lá da raiz faz), a pergunta
+#  sobre sudo não é repetida.
+set -euo pipefail
 
 CONFIG="$HOME/.tmux.conf"
+THEME_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tmux-icaro"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN_DIR="$HOME/.local/bin"
+
+c_reset="\033[0m"; c_blue="\033[34m"; c_green="\033[32m"; c_yellow="\033[33m"; c_red="\033[31m"
+info()  { echo -e "${c_blue}[*]${c_reset} $1"; }
+ok()    { echo -e "${c_green}[✓]${c_reset} $1"; }
+warn()  { echo -e "${c_yellow}[!]${c_reset} $1"; }
+err()   { echo -e "${c_red}[x]${c_reset} $1"; }
 
 echo "╔══════════════════════════════════════════╗"
 echo "║       TMUX ÍCARO LIRA — INSTALLER       ║"
 echo "╚══════════════════════════════════════════╝"
 echo
 
-if ! command -v tmux >/dev/null 2>&1; then
-    echo "tmux não encontrado."
-    echo "Fedora: sudo dnf install tmux"
-    exit 1
+FORCE_MODE="${ICARO_MODE:-}"
+for arg in "$@"; do
+    case "$arg" in
+        --user)   FORCE_MODE="user" ;;
+        --system) FORCE_MODE="system" ;;
+        -h|--help)
+            echo "Uso: ./install.sh [--user] [--system]"
+            echo "  --user    instala o tmux (se precisar) em \$HOME/.local, sem sudo"
+            echo "  --system  usa o gerenciador de pacotes do sistema (precisa de sudo)"
+            exit 0
+            ;;
+    esac
+done
+
+MODE=""
+if [ -n "$FORCE_MODE" ]; then
+    MODE="$FORCE_MODE"
+elif ! command -v sudo >/dev/null 2>&1; then
+    MODE="user"
+else
+    read -rp "Você TEM acesso a sudo nesta máquina? [s/N] " resp_sudo
+    resp_sudo="${resp_sudo:-n}"
+    if [[ "$resp_sudo" =~ ^[Ss]$ ]]; then MODE="system"; else MODE="user"; fi
 fi
+
+# ---------- instalar o tmux, se ainda não tiver ----------
+if ! command -v tmux >/dev/null 2>&1; then
+    info "tmux não encontrado, instalando..."
+
+    if [ "$MODE" = "system" ]; then
+        if command -v dnf >/dev/null 2>&1; then
+            sudo dnf install -y tmux && ok "tmux instalado via dnf." || warn "Falha ao instalar via dnf."
+        elif command -v apt >/dev/null 2>&1; then
+            sudo apt update -y && sudo apt install -y tmux && ok "tmux instalado via apt." || warn "Falha ao instalar via apt."
+        elif command -v pacman >/dev/null 2>&1; then
+            sudo pacman -S --needed --noconfirm tmux && ok "tmux instalado via pacman." || warn "Falha ao instalar via pacman."
+        elif command -v zypper >/dev/null 2>&1; then
+            sudo zypper install -y tmux && ok "tmux instalado via zypper." || warn "Falha ao instalar via zypper."
+        elif command -v brew >/dev/null 2>&1; then
+            brew install tmux && ok "tmux instalado via brew." || warn "Falha ao instalar via brew."
+        else
+            warn "Não reconheci o gerenciador de pacotes — tentando build estático sem sudo mesmo assim."
+        fi
+    fi
+
+    # Sem sudo (ou o gerenciador de pacotes falhou): baixa o build
+    # estático oficial do próprio projeto tmux (tmux/tmux-builds),
+    # feito pra rodar em qualquer distro sem precisar compilar nada.
+    if ! command -v tmux >/dev/null 2>&1; then
+        mkdir -p "$BIN_DIR"
+        arch_name=""
+        case "$(uname -m)" in
+            x86_64|amd64)  arch_name="x86_64" ;;
+            aarch64|arm64) arch_name="arm64" ;;
+        esac
+
+        if [ -z "$arch_name" ]; then
+            err "Arquitetura '$(uname -m)' sem build estático conhecido do tmux."
+        elif ! command -v curl >/dev/null 2>&1; then
+            err "Sem 'curl' disponível — não deu pra baixar o tmux automaticamente."
+        else
+            info "Baixando build estático oficial do tmux (tmux/tmux-builds), sem sudo..."
+            # Descobre a tag da release mais recente pelo redirect de
+            # /releases/latest (não usa a API do GitHub, que tem um
+            # limite de 60 req/hora sem autenticação — fácil de bater
+            # nele num laboratório com várias pessoas instalando ao
+            # mesmo tempo pelo mesmo IP).
+            tag="$(curl -sI "https://github.com/tmux/tmux-builds/releases/latest" 2>/dev/null \
+                | grep -i '^location:' | sed -E 's#.*/tag/##; s/\r$//')"
+            if [ -z "$tag" ]; then
+                err "Não consegui descobrir a versão mais recente do tmux."
+                err "Baixe manualmente em: https://github.com/tmux/tmux-builds/releases/latest"
+            else
+                ver="${tag#v}"
+                dl_url="https://github.com/tmux/tmux-builds/releases/download/${tag}/tmux-${ver}-linux-${arch_name}.tar.gz"
+                tmp="$(mktemp -d)"
+                if curl -fsSL -o "$tmp/tmux.tar.gz" "$dl_url" 2>/dev/null \
+                    && tar xzf "$tmp/tmux.tar.gz" -C "$tmp" 2>/dev/null; then
+                    found="$(find "$tmp" -maxdepth 2 -type f -name tmux 2>/dev/null | head -n1)"
+                    if [ -n "$found" ]; then
+                        install -m 755 "$found" "$BIN_DIR/tmux"
+                        ok "tmux instalado em $BIN_DIR (build estático, sem sudo)."
+                    else
+                        err "Não encontrei o binário 'tmux' dentro do pacote baixado."
+                    fi
+                else
+                    err "Falha ao baixar/extrair $dl_url"
+                    err "Baixe manualmente em: https://github.com/tmux/tmux-builds/releases/latest"
+                fi
+                rm -rf "$tmp"
+            fi
+        fi
+    fi
+
+    export PATH="$BIN_DIR:$PATH"
+    if ! command -v tmux >/dev/null 2>&1; then
+        err "tmux continua indisponível. Instale manualmente e rode este script de novo."
+        exit 1
+    fi
+fi
+
+ok "tmux disponível: $(command -v tmux) ($(tmux -V))"
 
 if [ -f "$CONFIG" ]; then
     BACKUP="$HOME/.tmux.conf.backup.$(date +%Y%m%d-%H%M%S)"
     cp "$CONFIG" "$BACKUP"
-    echo "✓ Backup criado: $BACKUP"
+    ok "Backup criado: $BACKUP"
 fi
 
 cp "$SCRIPT_DIR/tmux.conf" "$CONFIG"
-echo "✓ ~/.tmux.conf instalado"
+mkdir -p "$THEME_DIR"
+install -m 755 "$SCRIPT_DIR/theme-picker.sh" "$THEME_DIR/theme-picker.sh"
+if [ ! -f "$THEME_DIR/theme.conf" ]; then
+    # Gera a paleta padrão sem exigir interação durante a instalação.
+    cat > "$THEME_DIR/theme.conf" <<'THEME'
+# Tema inicial Ícaro Red — edite ou use Ctrl+A T para trocar.
+set -g @icaro_theme 'Ícaro Red'
+set -g @icaro_primary 'colour196'
+set -g @icaro_accent 'colour203'
+set -g @icaro_bg 'colour234'
+set -g @icaro_secondary 'colour237'
+set -g @icaro_fg 'colour255'
+set -g @icaro_muted 'colour245'
+set -g status-style 'bg=colour234,fg=colour255'
+set -g message-style 'bg=colour203,fg=colour16,bold'
+set -g message-command-style 'bg=colour237,fg=colour203'
+set -g status-left '#[fg=colour16,bg=colour203,bold]  ◆ ÍCARO #[fg=colour203,bg=colour234]#[default] '
+set -g status-left-length 30
+set -g status-right-length 100
+set -g window-status-separator ''
+setw -g window-status-format '#[fg=colour245,bg=colour234]  #I  #[fg=colour255,bg=colour237]#W #[default]'
+setw -g window-status-current-format '#[fg=colour16,bg=colour196,bold]  #I  #W  #[fg=colour196,bg=colour234]#[default]'
+set -g status-right '#[fg=colour245]#{?client_prefix,⌨ PREFIX ,}#[fg=colour203,bold] #{session_name} #[fg=colour245]│ #[fg=colour255]#{host_short} #[fg=colour245]│ #[fg=colour203,bold]%d %b  %H:%M #[default] '
+set -g pane-border-style 'fg=colour237'
+set -g pane-active-border-style 'fg=colour203,bold'
+set -g pane-border-status top
+set -g display-panes-active-colour colour203
+set -g display-panes-colour colour245
+set -g pane-border-format ' #[fg=colour203,bold]#P #[fg=colour245]│ #[fg=colour255]#{pane_title} #[fg=colour245]· #{b:pane_current_path} '
+THEME
+fi
+ok "~/.tmux.conf instalado"
+ok "Seletor de temas instalado em $THEME_DIR"
 
 if tmux info >/dev/null 2>&1; then
     tmux source-file "$CONFIG"
-    echo "✓ Configuração recarregada"
+    ok "Configuração recarregada"
 else
-    echo "✓ Abra uma sessão com: tmux"
+    info "Abra uma sessão com: tmux"
 fi
 
 echo
 echo "Prefixo: Ctrl+A"
 echo "Ajuda:   Ctrl+A ?"
+echo "Tema:    Ctrl+A T"
+echo "Cores:   tmux-icaro-theme (se adicionado ao PATH)"
 echo "Recarregar: Ctrl+A r"
 echo
-echo "TMUX Ícaro Lira instalado."
+if [ "$MODE" = "user" ] && [[ "$(command -v tmux)" == "$BIN_DIR"/* ]]; then
+    info "tmux foi instalado em $BIN_DIR — abra um novo terminal (ou rode 'source ~/.bashrc')"
+    info "se o comando 'tmux' não for encontrado na primeira vez."
+fi
+ok "TMUX Ícaro Lira instalado."
